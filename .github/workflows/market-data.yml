@@ -1,0 +1,53 @@
+# Copy to .github/workflows/market-data.yml in a PUBLIC repository named
+# infiloop-market-data, with build.dart at its root. Runs every weekday
+# evening after market close (IST) and commits companies.csv + prices.csv.
+# The Infiloop app reads them through jsDelivr (free CDN):
+#   https://cdn.jsdelivr.net/gh/OWNER/infiloop-market-data@main/
+# CR-35: three tries (19:00, 21:00 IST and 08:00 IST next morning); a file
+# that is empty or much smaller than the last good one is never published.
+# GitHub emails the owner when a scheduled run fails.
+name: market-data
+on:
+  schedule:
+    - cron: "30 13 * * 1-5"   # 19:00 IST
+    - cron: "30 15 * * 1-5"   # 21:00 IST retry
+    - cron: "30 2 * * 2-6"    # 08:00 IST next morning retry
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - name: Download the latest bhavcopies (go back up to 7 days for holidays)
+        run: |
+          UA="Mozilla/5.0"
+          for i in 0 1 2 3 4 5 6 7; do
+            D=$(TZ=Asia/Kolkata date -d "-$i day" +%Y%m%d)
+            curl -sf -A "$UA" -o nse.zip "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_${D}_F_0000.csv.zip" || continue
+            curl -sf -A "$UA" -o bse.csv "https://www.bseindia.com/download/BhavCopy/Equity/BhavCopy_BSE_CM_0_0_0_${D}_F_0000.CSV" || true
+            unzip -o -q nse.zip && mv BhavCopy_NSE_CM_*.csv nse.csv && echo "Using $D" && break
+          done
+          test -f nse.csv || test -f bse.csv
+      - run: mkdir -p new && dart run build.dart nse.csv bse.csv new
+      - name: Check before publishing (keep the last good files otherwise)
+        run: |
+          NEW=$(wc -l < new/prices.csv)
+          OLD=$(test -f prices.csv && wc -l < prices.csv || echo 0)
+          echo "prices: new $NEW lines, last $OLD"
+          if [ "$NEW" -lt 1000 ] || [ "$NEW" -lt $((OLD * 7 / 10)) ]; then
+            echo "Too small; keeping the last good files"; exit 1
+          fi
+          if [ -f prices.csv ] && [ "$(head -1 new/prices.csv)" = "$(head -1 prices.csv)" ]; then
+            echo "Same date as published; nothing to do"; exit 0
+          fi
+          cp new/companies.csv new/prices.csv .
+      - name: Commit if changed
+        run: |
+          git config user.name "market-data bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add companies.csv prices.csv
+          git diff --cached --quiet || git commit -m "Prices $(head -1 prices.csv | cut -d, -f2)"
+          git push
