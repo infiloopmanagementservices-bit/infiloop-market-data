@@ -51,3 +51,4 @@ jobs:
           git add companies.csv prices.csv
           git diff --cached --quiet || git commit -m "Prices $(head -1 prices.csv | cut -d, -f2)"
           git push
+      - {name: Refresh the CDN copy, run: for f in companies.csv prices.csv; do curl -sf https://purge.jsdelivr.net/gh/infiloopmanagementservices-bit/infiloop-market-data@main/$f || true; done}
